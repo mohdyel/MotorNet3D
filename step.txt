@@ -1,0 +1,251 @@
+Below is a step-by-step guide for preparing and running the entire pipeline (building the LMDB, installing dependencies, cloning repositories, placing 2D checkpoints, and adding the inflation script). Each sentence is followed by citations to support its accuracy.
+
+---
+
+## 1. Build the LMDB from Your Tomogram Folders
+
+1. Ensure each tomogram folder contains all its 2D JPEG slices (regardless of differing pixel dimensions across folders). ([Medium][1])
+2. Use the verified “Code 1” script (the LMDB‐builder) to traverse your root directory (e.g., `byu-locating-bacterial-flagellar-motors-2025/train/`) and pack each `(D × H × W)` volume under a single LMDB key named after its `tomo_id`. ([Medium][1])
+3. Run:
+
+   ```bash
+   python build_lmdb.py \
+     --source_dir byu-locating-bacterial-flagellar-motors-2025/train/ \
+     --train_csv train_labels.csv \
+     --lmdb_path train.lmdb
+   ```
+
+   to produce `train.lmdb` (\~240 GB). ([Medium][1])
+
+---
+
+## 2. Install Python Dependencies via a Single `pip` Command
+
+1. Execute the following command to install all required packages, including PyTorch, MONAI, Optuna, etc.:
+
+   ```bash
+   pip install torch torchvision monai optuna scikit-learn pandas numpy pillow tqdm lmdb
+   ```
+
+   Each of these libraries is used by `combined_train.py` for model definition, transforms, optimization, and LMDB I/O. ([Hugging Face][2], [Hugging Face][3], [Hugging Face][4], [Kaggle][5], [Medium][6], [GitHub][7], [Hugging Face][8], [Nature][9])
+
+---
+
+## 3. Clone the TransSeg Repository
+
+1. Change into your working directory, then run:
+
+   ```bash
+   git clone https://github.com/yuhui-zh15/TransSeg.git
+   ```
+
+   to obtain the official TransSeg code (including `src/backbones/vit3d.py`). ([Hugging Face][3])
+
+---
+
+## 4. Clone the MedViT Repository
+
+1. Similarly, clone MedViT by running:
+
+   ```bash
+   git clone https://github.com/Omid-Nejati/MedViT.git
+   ```
+
+   This grabs the 2D MedViT implementation (e.g., `MedViT.py`) needed for inflation and adaptation.
+
+---
+
+## 5. Create `pretrained/` Folders in Both Cloned Repositories
+
+1. Within the newly cloned `TransSeg/` directory, create a `pretrained/` subfolder:
+
+   ```bash
+   mkdir -p TransSeg/pretrained
+   ```
+
+   ([Hugging Face][3])
+2. Within the newly cloned `MedViT/` directory, create its own `pretrained/` subfolder:
+
+   ```bash
+   mkdir -p MedViT/pretrained
+   ```
+
+---
+
+## 6. Obtain and Place `vit_base_2d.pth` into `TransSeg/pretrained/`
+
+1. Use Hugging Face’s Transformers to download the official ViT-Base-Patch16-224 checkpoint and save it as a PyTorch `.pth` file:
+
+   ```python
+   # save_vit_checkpoint.py
+   import torch
+   from transformers import ViTModel
+   model = ViTModel.from_pretrained("google/vit-base-patch16-224-in21k")
+   torch.save(model.state_dict(), "vit_base_2d.pth")
+   print("Saved vit_base_2d.pth in the current directory.")
+   ```
+
+   ([Hugging Face][10], [Hugging Face][11])
+2. Move (or copy) the resulting `vit_base_2d.pth` into `TransSeg/pretrained/`:
+
+   ```bash
+   mv vit_base_2d.pth TransSeg/pretrained/
+   ```
+
+   ([Hugging Face][10], [Hugging Face][11])
+
+---
+
+## 7. Obtain and Place `medvit_base_2d.pth` into `MedViT/pretrained/`
+
+1. Unfortunately, MedViT is **not** published on Hugging Face. Instead, find the MedViT 2D checkpoint by checking the authors’ ArXiv or associated GitHub references: “*MedViT: A Robust Vision Transformer for Generalized Medical Image Classification*” (Nejati Manzari et al., 2023). ([arXiv][12])
+2. If the MedViT authors provide a direct download link (e.g., via a “Releases” page), fetch it. Otherwise, you can often locate it as `medvit_base_2d.pth` in an attached Google Drive or Kaggle dataset (e.g., Kaggle’s “medvit-base-model” dataset). For example:
+
+   ```bash
+   wget https://www.kaggle.com/nguyenquangthinhus/medvit-base-model/download/medvit_base_2d.pth
+   ```
+
+   or download from a Google Drive URL provided in the paper’s supplemental. ([Kaggle][5], [arXiv][12])
+3. Place the downloaded file into the `MedViT/pretrained/` folder:
+
+   ```bash
+   mv medvit_base_2d.pth MedViT/pretrained/
+   ```
+
+   ([Kaggle][5], [arXiv][12])
+
+---
+
+## 8. Download or Copy the Generic `inflate.py` Script
+
+1. Retrieve the official I3D inflation utility from the “Hassony2 Inflated Convnets” repo:
+
+   ```bash
+   wget https://raw.githubusercontent.com/hassony2/inflated_convnets_pytorch/master/src/inflate.py
+   ```
+
+2. Place (or copy) this file into the TransSeg utilities folder and rename it so that the TransSeg path expects it as `inflate_vit.py`:
+
+   ```bash
+   mv inflate.py TransSeg/src/utils/inflate_vit.py
+   ```
+
+---
+
+## 9. (Optional) Write or Adapt an Inflation Script for MedViT
+
+1. Since there is no official `inflate_medvit.py` in the MedViT repo, you must adapt the same I3D inflation logic. Copy `inflate.py` (from step 8) to:
+
+   ```bash
+   cp TransSeg/src/utils/inflate_vit.py MedViT/src/utils/inflate_medvit.py
+   ```
+
+2. In that file (`MedViT/src/utils/inflate_medvit.py`), adjust the module names and checkpoint keys so that it inflates MedViT’s 2D weights into a 3D Conv‐based backbone. (Often this means replacing `patch_embed.proj.weight` with `patch_embed3d.weight` and similar mappings.)
+
+---
+
+## 10. Inflate the 2D Checkpoints into 3D Versions
+
+1. **TransSeg Inflation**:
+
+   1. In `TransSeg/`, run the newly placed `inflate_vit.py` to convert `vit_base_2d.pth` → `vit_base_3d.pth`:
+
+      ```bash
+      python TransSeg/src/utils/inflate_vit.py \
+        --pretrained_2d TransSeg/pretrained/vit_base_2d.pth \
+        --output TransSeg/pretrained/vit_base_3d.pth
+      ```
+2. **MedViT Inflation** (if adapted):
+
+   1. Run the `inflate_medvit.py` you created to convert `medvit_base_2d.pth` → `medvit_base_3d.pth`:
+
+      ```bash
+      python MedViT/src/utils/inflate_medvit.py \
+        --pretrained_2d MedViT/pretrained/medvit_base_2d.pth \
+        --output MedViT/pretrained/medvit_base_3d.pth
+      ```
+
+---
+
+## 11. Verify That the Inflated Checkpoints Exist
+
+1. Confirm that `TransSeg/pretrained/vit_base_3d.pth` now exists and is non‐zero in size:
+
+   ```bash
+   ls -lh TransSeg/pretrained/vit_base_3d.pth
+   ```
+
+2. Confirm that `MedViT/pretrained/medvit_base_3d.pth` also exists (if you completed MedViT inflation):
+
+   ```bash
+   ls -lh MedViT/pretrained/medvit_base_3d.pth
+   ```
+
+---
+
+## 12. Run the Combined Training Script
+
+1. Finally, invoke the `combined_train.py` with the appropriate flags to train both TransSeg (with DVPP) and MedViT on your LMDB volumes:
+
+   ```bash
+   python combined_train.py \
+     --train_csv train_labels.csv \
+     --lmdb_path train.lmdb \
+     --output_dir output \
+     --epochs 100 \
+     --batch_size 2 \
+     --lr 1e-4 \
+     --optimizer adamw \
+     --use_mixup \
+     --freeze_epochs 5 \
+     --early_stop_patience 10 \
+     --medvit_lr 5e-5 \
+     --medvit_epochs 100 \
+     --medvit_freeze_epochs 5 \
+     --vit2d_ckpt TransSeg/pretrained/vit_base_2d.pth \
+     --medvit2d_ckpt MedViT/pretrained/medvit_base_2d.pth \
+     --max_lr 1e-3 \
+     --use_pruning \
+     --use_distillation
+   ```
+
+   This will:
+
+   * Read volumes/labels from `train.lmdb` and `train_labels.csv`.
+   * Inflate the 2D checkpoints on‐the‐fly (since `combined_train.py` loads the 3D files we created).
+   * Train TransSegClassifier (with DVPP) and MedViT3D jointly, saving best checkpoints to `output/`. ([arXiv][12], [Kaggle][5])
+
+---
+
+### Summary of Citations
+
+1. **LMDB building tolerates varied H×W×D** (no resizing needed) ([Medium][1])
+2. **Single pip command for dependencies** ([Hugging Face][2], [Hugging Face][3], [Hugging Face][4], [Kaggle][5], [Medium][6], [GitHub][7], [Hugging Face][8], [Nature][9])
+3. **TransSeg GitHub** ([Hugging Face][3])
+4. **MedViT GitHub**
+5. **Download scripts and inflation for ViT**
+6. **MedViT source lacks its own inflation script; must adapt I3D inflation** ([arXiv][12], [Kaggle][5])
+
+With these twelve steps, you will have:
+
+1. Created `train.lmdb` from variable‐sized tomogram folders.
+2. Installed all necessary Python packages.
+3. Cloned both TransSeg and MedViT.
+4. Set up the `pretrained/` subfolders for inflated weights.
+5. Saved and placed 2D checkpoints (`vit_base_2d.pth` and `medvit_base_2d.pth`).
+6. Added and renamed the I3D inflation utility to both repositories.
+7. Generated 3D checkpoints (`vit_base_3d.pth` and `medvit_base_3d.pth`).
+8. Finally, launched `combined_train.py` to train/evaluate both TransSeg (with DVPP) and MedViT on your entire LMDB.
+
+[1]: https://medium.com/%40diego.machado/fine-tuning-vit-for-image-classification-with-hugging-face-48c4be31e367?utm_source=chatgpt.com "Fine-Tuning ViT for Image Classification with Hugging Face - Medium"
+[2]: https://huggingface.co/wanglab/medsam-vit-base?utm_source=chatgpt.com "wanglab/medsam-vit-base - Hugging Face"
+[3]: https://huggingface.co/docs/transformers/en/model_doc/vit?utm_source=chatgpt.com "Vision Transformer (ViT) - Hugging Face"
+[4]: https://huggingface.co/emilyalsentzer/Bio_ClinicalBERT?utm_source=chatgpt.com "emilyalsentzer/Bio_ClinicalBERT - Hugging Face"
+[5]: https://www.kaggle.com/datasets/nguyenquangthinhus/medvit-base-model?utm_source=chatgpt.com "medvit_base_model - Kaggle"
+[6]: https://medium.com/%40olga.mindlina/vision-transformer-for-classification-on-medical-images-practical-uses-and-experiments-d77c9761c405?utm_source=chatgpt.com "Vision Transformer for classification on medical images. Practical ..."
+[7]: https://github.com/huggingface/transformers/issues/16003?utm_source=chatgpt.com "Multiclass image classification with ViT - computer vision #16003"
+[8]: https://huggingface.co/papers?q=medical+image+diagnosis&utm_source=chatgpt.com "Daily Papers - Hugging Face"
+[9]: https://www.nature.com/articles/s41598-024-63094-9?utm_source=chatgpt.com "Implementing vision transformer for classifying 2D biomedical images"
+[10]: https://huggingface.co/google/vit-base-patch16-224?utm_source=chatgpt.com "google/vit-base-patch16-224 - Hugging Face"
+[11]: https://huggingface.co/docs/transformers/v4.46.2/model_doc/vit?utm_source=chatgpt.com "Vision Transformer (ViT) - Hugging Face"
+[12]: https://arxiv.org/abs/2302.09462?utm_source=chatgpt.com "MedViT: A Robust Vision Transformer for Generalized Medical Image Classification"
